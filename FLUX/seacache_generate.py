@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from typing import Any, Dict, Optional, Union
 import argparse
+import json
 import os
 import re
 from datetime import datetime
@@ -56,6 +57,7 @@ def seacache_forward(
 
     hidden_states = self.x_embedder(hidden_states)
 
+    raw_timestep = timestep
     timestep = timestep.to(hidden_states.dtype) * 1000
     if guidance is not None:
         guidance = guidance.to(hidden_states.dtype) * 1000
@@ -86,6 +88,12 @@ def seacache_forward(
     # ---- SeaCache gating ----
     should_calc = True
     if getattr(self, "enable_seacache", False):
+        step_index = int(getattr(self, "cnt", 0))
+        acc_before = float(getattr(self, "accumulated_rel_l1_distance", 0.0))
+        distance = None
+        acc_hit = False
+        refresh_reason = "warmup"
+
         inp = hidden_states
         temb_ = temb
         modulated_inp, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.transformer_blocks[0].norm1(inp, emb=temb_)
@@ -93,6 +101,7 @@ def seacache_forward(
         if self.cnt == 0 or self.cnt == self.num_steps - 1 or self.previous_modulated_input is None:
             should_calc = True
             self.accumulated_rel_l1_distance = 0.0
+            acc_after = 0.0
         else:
             # Apply SEA filtering before computing distance
             modulated_inp = modulated_inp.reshape(
@@ -110,14 +119,49 @@ def seacache_forward(
                 norm_mode="mean",
             )
             modulated_inp = modulated_inp.reshape(modulated_inp.shape[0], -1, modulated_inp.shape[-1])
-            self.accumulated_rel_l1_distance += rel_l1(modulated_inp, self.previous_modulated_input)
+            single_rel_l1 = rel_l1(modulated_inp, self.previous_modulated_input)
+            distance = single_rel_l1
+            self.accumulated_rel_l1_distance += single_rel_l1
 
             if self.accumulated_rel_l1_distance < float(self.seacache_thresh):
                 should_calc = False
+                refresh_reason = "skip"
+                acc_after = float(self.accumulated_rel_l1_distance)
             else:
                 should_calc = True
+                acc_hit = True
+                refresh_reason = "acc"
                 self.accumulated_rel_l1_distance = 0.0
+                acc_after = 0.0
 
+        if should_calc:
+            self.last_refresh_step = step_index
+            steps_since_refresh = 0
+        else:
+            last_refresh_step = getattr(self, "last_refresh_step", None)
+            steps_since_refresh = None if last_refresh_step is None else step_index - last_refresh_step
+
+        if getattr(self, "cache_decision_log_path", None):
+            _log_cache_decision(
+                self,
+                {
+                    "prompt_id": getattr(self, "cache_prompt_id", None),
+                    "seed": getattr(self, "cache_seed", None),
+                    "step_index": step_index,
+                    "timestep": _to_log_value(raw_timestep),
+                    "distance": distance,
+                    "acc_before": acc_before,
+                    "acc_after": acc_after,
+                    "delta_acc": float(self.seacache_thresh),
+                    "delta_single": None,
+                    "refresh": bool(should_calc),
+                    "refresh_reason": refresh_reason,
+                    "single_hit": False,
+                    "acc_hit": acc_hit,
+                    "last_refresh_step": getattr(self, "last_refresh_step", None),
+                    "steps_since_refresh": steps_since_refresh,
+                },
+            )
         self.previous_modulated_input = modulated_inp
         self.cnt += 1
         if self.cnt == self.num_steps:
@@ -245,6 +289,25 @@ def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _to_log_value(value):
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu()
+        if value.numel() == 1:
+            return value.item()
+        return value.reshape(-1).tolist()
+    return value
+
+
+def _log_cache_decision(model, entry):
+    log_path = getattr(model, "cache_decision_log_path", None)
+    if not log_path:
+        return
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Diffusers + SeaCache (FLUX) — image generation from prompts (aligned with the second script)."
@@ -331,6 +394,12 @@ def main():
         default=0.3,
         help="SeaCache threshold (equivalent to specache_thresh in the other script). 0.3: 2x, 0.6: 3x",
     )
+    parser.add_argument(
+        "--log-cache-decisions",
+        type=str,
+        default=None,
+        help="Optional JSONL path for SeaCache cache decision logs.",
+    )
 
     # dtype selection (matches the second script's default bfloat16)
     parser.add_argument(
@@ -389,6 +458,13 @@ def main():
     tr.scheduler = pipe.scheduler
     tr.enable_seacache = True
     tr.seacache_thresh = float(args.seacache_thresh)
+    tr.cache_decision_log_path = args.log_cache_decisions
+    if args.log_cache_decisions:
+        log_dir = os.path.dirname(os.path.abspath(args.log_cache_decisions))
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        with open(args.log_cache_decisions, "w", encoding="utf-8"):
+            pass
 
     # Random sequence: same pattern as the second script (global sample index)
     base_seed = int(args.seed)
@@ -412,6 +488,9 @@ def main():
             tr.accumulated_rel_l1_distance = 0.0
             tr.previous_modulated_input = None
             tr.previous_residual = None
+            tr.last_refresh_step = None
+            tr.cache_prompt_id = p_idx
+            tr.cache_seed = seed_this
 
             generator = torch.Generator(device=device).manual_seed(seed_this)
 
