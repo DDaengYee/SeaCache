@@ -19,6 +19,7 @@ from diffusers.utils import (
     unscale_lora_layers,
 )
 from util_seacache import rel_l1, apply_sea_with_scheduler
+from cache_gate import decide_cache_refresh
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -92,6 +93,7 @@ def seacache_forward(
         acc_before = float(getattr(self, "accumulated_rel_l1_distance", 0.0))
         distance = None
         acc_hit = False
+        single_hit = False
         refresh_reason = "warmup"
 
         inp = hidden_states
@@ -121,18 +123,14 @@ def seacache_forward(
             modulated_inp = modulated_inp.reshape(modulated_inp.shape[0], -1, modulated_inp.shape[-1])
             single_rel_l1 = rel_l1(modulated_inp, self.previous_modulated_input)
             distance = single_rel_l1
-            self.accumulated_rel_l1_distance += single_rel_l1
-
-            if self.accumulated_rel_l1_distance < float(self.seacache_thresh):
-                should_calc = False
-                refresh_reason = "skip"
-                acc_after = float(self.accumulated_rel_l1_distance)
-            else:
-                should_calc = True
-                acc_hit = True
-                refresh_reason = "acc"
-                self.accumulated_rel_l1_distance = 0.0
-                acc_after = 0.0
+            should_calc, acc_after, refresh_reason, single_hit, acc_hit = decide_cache_refresh(
+                gate=getattr(self, "cache_gate", "accumulated"),
+                distance=single_rel_l1,
+                acc_before=acc_before,
+                delta_acc=float(self.seacache_thresh),
+                delta_single=getattr(self, "delta_single", None),
+            )
+            self.accumulated_rel_l1_distance = acc_after
 
         if should_calc:
             self.last_refresh_step = step_index
@@ -153,10 +151,12 @@ def seacache_forward(
                     "acc_before": acc_before,
                     "acc_after": acc_after,
                     "delta_acc": float(self.seacache_thresh),
-                    "delta_single": None,
+                    "delta_single": getattr(self, "delta_single", None)
+                    if getattr(self, "cache_gate", "accumulated") == "dual"
+                    else None,
                     "refresh": bool(should_calc),
                     "refresh_reason": refresh_reason,
-                    "single_hit": False,
+                    "single_hit": single_hit,
                     "acc_hit": acc_hit,
                     "last_refresh_step": getattr(self, "last_refresh_step", None),
                     "steps_since_refresh": steps_since_refresh,
@@ -279,6 +279,17 @@ def read_prompts(path: str):
         return [line.strip() for line in f if line.strip()]
 
 
+def parse_seed_list(seed_list: str):
+    seeds = []
+    for item in seed_list.split(","):
+        item = item.strip()
+        if item:
+            seeds.append(int(item))
+    if not seeds:
+        raise ValueError("--seeds must contain at least one integer seed.")
+    return seeds
+
+
 def safe_filename(name: str) -> str:
     name = re.sub(r"\s+", "_", name.strip())
     name = re.sub(r"[^0-9A-Za-z._-]", "", name)
@@ -315,6 +326,7 @@ def main():
     # Prompt input options
     parser.add_argument(
         "--prompt_file",
+        "--prompt-file",
         type=str,
         default=None,
         help="Path to a text file containing one prompt per line.",
@@ -363,6 +375,12 @@ def main():
         help="Base random seed (global sample index is added to this).",
     )
     parser.add_argument(
+        "--seeds",
+        type=str,
+        default=None,
+        help="Comma-separated explicit seed list, e.g. 0,1,2. Overrides --num_images_per_prompt seed expansion.",
+    )
+    parser.add_argument(
         "--num_images_per_prompt",
         type=int,
         default=1,
@@ -395,6 +413,19 @@ def main():
         help="SeaCache threshold (equivalent to specache_thresh in the other script). 0.3: 2x, 0.6: 3x",
     )
     parser.add_argument(
+        "--cache-gate",
+        type=str,
+        default="accumulated",
+        choices=["accumulated", "dual"],
+        help="Cache refresh gate. 'accumulated' preserves original SeaCache behavior; 'dual' adds delta-single.",
+    )
+    parser.add_argument(
+        "--delta-single",
+        type=float,
+        default=None,
+        help="Single-step distance threshold used only when --cache-gate dual.",
+    )
+    parser.add_argument(
         "--log-cache-decisions",
         type=str,
         default=None,
@@ -411,6 +442,8 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.cache_gate == "dual" and args.delta_single is None:
+        parser.error("--delta-single is required when --cache-gate dual.")
 
     # Decide where prompts come from
     if args.prompt_file:
@@ -458,6 +491,8 @@ def main():
     tr.scheduler = pipe.scheduler
     tr.enable_seacache = True
     tr.seacache_thresh = float(args.seacache_thresh)
+    tr.cache_gate = args.cache_gate
+    tr.delta_single = float(args.delta_single) if args.delta_single is not None else None
     tr.cache_decision_log_path = args.log_cache_decisions
     if args.log_cache_decisions:
         log_dir = os.path.dirname(os.path.abspath(args.log_cache_decisions))
@@ -468,19 +503,21 @@ def main():
 
     # Random sequence: same pattern as the second script (global sample index)
     base_seed = int(args.seed)
+    explicit_seeds = parse_seed_list(args.seeds) if args.seeds else None
     global_sample_idx = 0  # Index over all generated images
 
     print(
         f"[{now_str()}] Start | model_id={model_id} ({model_name}) | steps={num_steps} | "
         f"guidance={args.guidance} | seacache_thresh={args.seacache_thresh} | "
+        f"cache_gate={args.cache_gate} | delta_single={args.delta_single} | "
         f"prompts={len(prompts)} | seed={base_seed} | dtype={torch_dtype}"
     )
 
     for p_idx, prompt in enumerate(prompts):
-        n = int(args.num_images_per_prompt)
-        for i in range(n):
-            # Per-sample seed
-            seed_this = base_seed + global_sample_idx
+        seeds_for_prompt = explicit_seeds if explicit_seeds is not None else [
+            base_seed + global_sample_idx + offset for offset in range(int(args.num_images_per_prompt))
+        ]
+        for i, seed_this in enumerate(seeds_for_prompt):
 
             # Reset SeaCache state 
             tr.cnt = 0
@@ -511,17 +548,16 @@ def main():
             # Save image
             img = out.images[0]
             base = safe_filename(prompt)[:80]
-            fn = f"SeaCache_{global_sample_idx:05d}-{base}.png"
+            fn = f"SeaCache_p{p_idx:03d}_seed{seed_this}_{global_sample_idx:05d}-{base}.png"
             img.save(os.path.join(args.output_dir, fn))
 
             truncated_prompt = prompt[:60] + ("…" if len(prompt) > 60 else "")
             print(
                 f"  - [{p_idx + 1}/{len(prompts)}] '{truncated_prompt}' "
-                f"# {i + 1}/{n} => 1 image"
+                f"# {i + 1}/{len(seeds_for_prompt)} | seed={seed_this} => 1 image"
             )
 
             global_sample_idx += 1
-        break  # NOTE: kept from your original script (only first prompt is processed).
 
     # Summary (no timing)
     if global_sample_idx > 0:
@@ -535,8 +571,11 @@ def main():
             f"  Steps per image:            {num_steps}",
             f"  Guidance:                   {args.guidance}",
             f"  SeaCache threshold:         {args.seacache_thresh}",
+            f"  Cache gate:                 {args.cache_gate}",
+            f"  Delta single:               {args.delta_single}",
             f"  Prompt source:              {prompt_source}",
             f"  Seed (base):                {base_seed}",
+            f"  Seeds:                      {args.seeds or '<base+sample-index>'}",
             f"  Total images:               {total_images}",
             f"  Size (WxH):                 {args.width}x{args.height}",
         ]
