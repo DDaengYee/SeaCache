@@ -13,7 +13,13 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 REASON_KEYS = ("warmup", "acc", "single", "skip")
-QUANTILES = (("0.90", 0.90), ("0.95", 0.95), ("0.975", 0.975), ("0.99", 0.99))
+QUANTILES = (
+    ("0.85", 0.85),
+    ("0.90", 0.90),
+    ("0.95", 0.95),
+    ("0.975", 0.975),
+    ("0.99", 0.99),
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -174,6 +180,7 @@ def analyze(rows: List[Dict[str, Any]], requested_quantile: float, log_path: Pat
     total_steps = len(rows)
     num_refresh = sum(1 for row in rows if as_bool(row.get("refresh")) is True)
     num_skip = sum(1 for row in rows if as_bool(row.get("refresh")) is False)
+    refresh_reason = reason_summary(rows)
 
     skip_distances = [
         distance
@@ -186,18 +193,25 @@ def analyze(rows: List[Dict[str, Any]], requested_quantile: float, log_path: Pat
     chosen_delta_single = quantile(skip_distances, requested_quantile)
 
     prompt_seed_rows = prompt_seed_summary(rows, chosen_delta_single)
+    local_spike_skip_count = sum(1 for row in rows if is_local_spike_skip(row, chosen_delta_single))
+    reset_after_refresh_spike_count = sum(1 for row in rows if is_reset_spike(row, chosen_delta_single))
     return {
         "log": str(log_path),
         "total_steps": total_steps,
         "num_refresh": num_refresh,
         "num_skip": num_skip,
         "refresh_ratio": (num_refresh / total_steps) if total_steps else 0.0,
-        "refresh_reason": reason_summary(rows),
+        "refresh_reason": refresh_reason,
+        "warmup_refresh_count": int(refresh_reason.get("warmup", {}).get("count", 0)),
+        "acc_trigger_refresh_count": int(refresh_reason.get("acc", {}).get("count", 0)),
+        "single_trigger_refresh_count": int(refresh_reason.get("single", {}).get("count", 0)),
+        "skip_reason_count": int(refresh_reason.get("skip", {}).get("count", 0)),
         "skip_distance_quantiles": skip_distance_quantiles,
         "requested_quantile": requested_quantile,
         "chosen_delta_single": chosen_delta_single,
-        "local_spike_skip_count": sum(1 for row in rows if is_local_spike_skip(row, chosen_delta_single)),
-        "reset_after_refresh_spike_count": sum(1 for row in rows if is_reset_spike(row, chosen_delta_single)),
+        "local_spike_skip_count": local_spike_skip_count,
+        "post_refresh_spike_count": local_spike_skip_count,
+        "reset_after_refresh_spike_count": reset_after_refresh_spike_count,
         "prompt_seed_summary": prompt_seed_rows,
     }
 

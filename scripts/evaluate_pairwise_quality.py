@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--out", required=True, help="Path to write per-image CSV metrics.")
     parser.add_argument("--lpips", action="store_true", help="Also compute LPIPS if the lpips package is installed.")
+    parser.add_argument("--ssim", action="store_true", help="Also compute SSIM if scikit-image is installed.")
     parser.add_argument("--device", default=None, help="Torch device for LPIPS, e.g. cuda or cpu. Defaults automatically.")
     return parser.parse_args()
 
@@ -108,6 +109,18 @@ def lpips_distance(model, device: str, reference: np.ndarray, candidate: np.ndar
     return float(value.detach().cpu().item())
 
 
+def ssim_distance(reference: np.ndarray, candidate: np.ndarray) -> float:
+    try:
+        from skimage.metrics import structural_similarity
+    except ImportError as exc:
+        raise RuntimeError("SSIM requested, but dependency is missing. Install with: python -m pip install scikit-image") from exc
+
+    try:
+        return float(structural_similarity(reference, candidate, channel_axis=2, data_range=1.0))
+    except TypeError:
+        return float(structural_similarity(reference, candidate, multichannel=True, data_range=1.0))
+
+
 def numeric_values(rows: Iterable[Dict[str, Any]], key: str) -> List[float]:
     values = []
     for row in rows:
@@ -137,7 +150,7 @@ def summarize(rows: List[Dict[str, Any]], missing: Dict[str, int]) -> List[Dict[
             "num_pairs": len(config_rows),
             "missing_pairs": missing.get(config, 0),
         }
-        for metric in ("psnr_db", "mse", "rmse", "mae", "lpips"):
+        for metric in ("psnr_db", "mse", "rmse", "mae", "lpips", "ssim"):
             values = numeric_values(config_rows, metric)
             mean, std = mean_std(values)
             summary[f"mean_{metric}"] = mean
@@ -157,6 +170,7 @@ def write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         "rmse",
         "mae",
         "lpips",
+        "ssim",
         "reference_image",
         "candidate_image",
     ]
@@ -193,6 +207,7 @@ def main() -> None:
             metrics["lpips"] = (
                 lpips_distance(lpips_model, lpips_device, reference, candidate) if lpips_model is not None else None
             )
+            metrics["ssim"] = ssim_distance(reference, candidate) if args.ssim else None
             prompt_id, seed = key
             rows.append(
                 {

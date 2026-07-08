@@ -431,6 +431,11 @@ def main():
         default=None,
         help="Optional JSONL path for SeaCache cache decision logs.",
     )
+    parser.add_argument(
+        "--disable-seacache",
+        action="store_true",
+        help="Disable SeaCache gating and residual reuse for full-compute reference generation.",
+    )
 
     # dtype selection (matches the second script's default bfloat16)
     parser.add_argument(
@@ -489,12 +494,12 @@ def main():
     # SeaCache state variables stored on the model instance
     tr = pipe.transformer
     tr.scheduler = pipe.scheduler
-    tr.enable_seacache = True
+    tr.enable_seacache = not args.disable_seacache
     tr.seacache_thresh = float(args.seacache_thresh)
     tr.cache_gate = args.cache_gate
     tr.delta_single = float(args.delta_single) if args.delta_single is not None else None
-    tr.cache_decision_log_path = args.log_cache_decisions
-    if args.log_cache_decisions:
+    tr.cache_decision_log_path = None if args.disable_seacache else args.log_cache_decisions
+    if args.log_cache_decisions and not args.disable_seacache:
         log_dir = os.path.dirname(os.path.abspath(args.log_cache_decisions))
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
@@ -510,6 +515,7 @@ def main():
         f"[{now_str()}] Start | model_id={model_id} ({model_name}) | steps={num_steps} | "
         f"guidance={args.guidance} | seacache_thresh={args.seacache_thresh} | "
         f"cache_gate={args.cache_gate} | delta_single={args.delta_single} | "
+        f"disable_seacache={args.disable_seacache} | "
         f"prompts={len(prompts)} | seed={base_seed} | dtype={torch_dtype}"
     )
 
@@ -573,6 +579,7 @@ def main():
             f"  SeaCache threshold:         {args.seacache_thresh}",
             f"  Cache gate:                 {args.cache_gate}",
             f"  Delta single:               {args.delta_single}",
+            f"  SeaCache disabled:          {args.disable_seacache}",
             f"  Prompt source:              {prompt_source}",
             f"  Seed (base):                {base_seed}",
             f"  Seeds:                      {args.seeds or '<base+sample-index>'}",
