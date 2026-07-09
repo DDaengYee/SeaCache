@@ -160,6 +160,7 @@ def main() -> None:
     if not rows:
         raise ValueError(f"No calibration sweep summaries found under {root / 'summaries' / 'calib_dual_sweep'}.")
 
+    q90_matched = closest(rows, "q90", baseline_refresh_ratio)
     q925_matched = closest(rows, "q925", baseline_refresh_ratio)
     q95_matched = closest(rows, "q95", baseline_refresh_ratio)
     q975_matched = closest(rows, "q975", baseline_refresh_ratio)
@@ -177,6 +178,7 @@ def main() -> None:
         "baseline_summary": str(baseline_path),
         "baseline_refresh_ratio": baseline_refresh_ratio,
         "selected": {
+            "dual_q90_matched": selected_record(q90_matched, "matched", baseline_refresh_ratio),
             "dual_q925_matched": selected_record(q925_matched, "matched", baseline_refresh_ratio),
             "dual_q95_matched": selected_record(q95_matched, "matched", baseline_refresh_ratio),
             "dual_q975_matched": selected_record(q975_matched, "matched", baseline_refresh_ratio),

@@ -34,7 +34,8 @@
   },
   "final_eval": {
     "prompts": "prompts_eval_50.txt",
-    "include_dual_q925_matched": false,
+    "include_dual_q90_matched": true,
+    "include_dual_q925_matched": true,
     "include_dual_q95_same_acc": true
   },
   "notes": [

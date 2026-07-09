@@ -107,6 +107,11 @@ def load_config_metadata(root: Path) -> Dict[str, Dict[str, Any]]:
             "delta_single": None,
             "delta_single_quantile": None,
         },
+        "dual_q90_matched": {
+            "config": "dual_q90_matched",
+            "cache_gate": "dual",
+            **selected.get("dual_q90_matched", {}),
+        },
         "dual_q95_matched": {
             "config": "dual_q95_matched",
             "cache_gate": "dual",
@@ -135,6 +140,8 @@ def final_order(root: Path) -> List[str]:
     settings = load_json(settings_path) if settings_path.exists() else {}
     final_settings = settings.get("final_eval", {})
     order = ["full_compute_reference", "seacache_baseline_acc030"]
+    if final_settings.get("include_dual_q90_matched", False):
+        order.append("dual_q90_matched")
     if final_settings.get("include_dual_q925_matched", False):
         order.append("dual_q925_matched")
     order.extend(["dual_q95_matched", "dual_q975_matched"])

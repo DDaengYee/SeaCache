@@ -153,7 +153,8 @@ def main() -> None:
         },
         "final_eval": {
             "prompts": "prompts_eval_50.txt",
-            "include_dual_q925_matched": False,
+            "include_dual_q90_matched": True,
+            "include_dual_q925_matched": True,
             "include_dual_q95_same_acc": True,
         },
         "notes": [

@@ -253,6 +253,19 @@ def final_eval_configs(root: Path, settings: Dict[str, Any]) -> List[Dict[str, A
             "delta_single_quantile": None,
         },
     ]
+    if settings["final_eval"].get("include_dual_q90_matched", False):
+        item = selected["dual_q90_matched"]
+        configs.append(
+            {
+                "stage": "final-eval",
+                "config": "dual_q90_matched",
+                "prompt_file": prompt_file,
+                "cache_gate": "dual",
+                "delta_acc": float(item["delta_acc"]),
+                "delta_single": float(item["delta_single"]),
+                "delta_single_quantile": item["delta_single_quantile"],
+            }
+        )
     if settings["final_eval"].get("include_dual_q925_matched", False):
         item = selected["dual_q925_matched"]
         configs.append(
