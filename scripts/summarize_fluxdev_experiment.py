@@ -14,15 +14,6 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_ROOT = "experiments/fluxdev_150_v1"
 BASELINE_CONFIG = "seacache_baseline_acc030"
-FINAL_ORDER = [
-    "full_compute_reference",
-    "seacache_baseline_acc030",
-    "dual_q95_matched",
-    "dual_q975_matched",
-    "dual_q95_same_acc",
-]
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Summarize the formal FLUX-dev SeaCache experiment.")
     parser.add_argument("--root", default=DEFAULT_ROOT, help="Experiment root directory.")
@@ -121,6 +112,11 @@ def load_config_metadata(root: Path) -> Dict[str, Dict[str, Any]]:
             "cache_gate": "dual",
             **selected.get("dual_q95_matched", {}),
         },
+        "dual_q925_matched": {
+            "config": "dual_q925_matched",
+            "cache_gate": "dual",
+            **selected.get("dual_q925_matched", {}),
+        },
         "dual_q975_matched": {
             "config": "dual_q975_matched",
             "cache_gate": "dual",
@@ -132,6 +128,19 @@ def load_config_metadata(root: Path) -> Dict[str, Dict[str, Any]]:
             **selected.get("dual_q95_same_acc", {}),
         },
     }
+
+
+def final_order(root: Path) -> List[str]:
+    settings_path = root / "configs" / "base_settings.json"
+    settings = load_json(settings_path) if settings_path.exists() else {}
+    final_settings = settings.get("final_eval", {})
+    order = ["full_compute_reference", "seacache_baseline_acc030"]
+    if final_settings.get("include_dual_q925_matched", False):
+        order.append("dual_q925_matched")
+    order.extend(["dual_q95_matched", "dual_q975_matched"])
+    if final_settings.get("include_dual_q95_same_acc", True):
+        order.append("dual_q95_same_acc")
+    return order
 
 
 def load_run_metadata(root: Path, config: str) -> Dict[str, Any]:
@@ -157,7 +166,7 @@ def cache_summary_rows(root: Path, metadata: Dict[str, Dict[str, Any]]) -> List[
     settings_path = root / "configs" / "base_settings.json"
     settings = load_json(settings_path) if settings_path.exists() else {}
     num_steps = int(settings.get("num_inference_steps", 0) or 0)
-    for config in FINAL_ORDER:
+    for config in final_order(root):
         cache_path = root / "summaries" / "final_cache" / f"{config}_cache.json"
         cache = load_json(cache_path) if cache_path.exists() else {}
         total_time, mean_time = run_time(root, config)

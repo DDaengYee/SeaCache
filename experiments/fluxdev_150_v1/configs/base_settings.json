@@ -17,6 +17,7 @@
     "delta_single_quantiles": [
       "q85",
       "q90",
+      "q925",
       "q95",
       "q975"
     ],
@@ -33,6 +34,7 @@
   },
   "final_eval": {
     "prompts": "prompts_eval_50.txt",
+    "include_dual_q925_matched": false,
     "include_dual_q95_same_acc": true
   },
   "notes": [

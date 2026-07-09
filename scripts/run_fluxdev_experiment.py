@@ -18,7 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 DEFAULT_ROOT = "experiments/fluxdev_150_v1"
-QUANTILE_KEYS = {"q85": "0.85", "q90": "0.90", "q95": "0.95", "q975": "0.975"}
+QUANTILE_KEYS = {"q85": "0.85", "q90": "0.90", "q925": "0.925", "q95": "0.95", "q975": "0.975"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -253,6 +253,19 @@ def final_eval_configs(root: Path, settings: Dict[str, Any]) -> List[Dict[str, A
             "delta_single_quantile": None,
         },
     ]
+    if settings["final_eval"].get("include_dual_q925_matched", False):
+        item = selected["dual_q925_matched"]
+        configs.append(
+            {
+                "stage": "final-eval",
+                "config": "dual_q925_matched",
+                "prompt_file": prompt_file,
+                "cache_gate": "dual",
+                "delta_acc": float(item["delta_acc"]),
+                "delta_single": float(item["delta_single"]),
+                "delta_single_quantile": item["delta_single_quantile"],
+            }
+        )
     for name in ("dual_q95_matched", "dual_q975_matched"):
         item = selected[name]
         configs.append(

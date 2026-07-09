@@ -148,11 +148,12 @@ def main() -> None:
         "calibration": {
             "prompts": "prompts_calib_10.txt",
             "baseline_delta_acc": 0.30,
-            "delta_single_quantiles": ["q85", "q90", "q95", "q975"],
+            "delta_single_quantiles": ["q85", "q90", "q925", "q95", "q975"],
             "delta_acc_candidates": [0.28, 0.30, 0.32, 0.34, 0.36, 0.38, 0.40, 0.42],
         },
         "final_eval": {
             "prompts": "prompts_eval_50.txt",
+            "include_dual_q925_matched": False,
             "include_dual_q95_same_acc": True,
         },
         "notes": [
